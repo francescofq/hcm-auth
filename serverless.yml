@@ -1,0 +1,122 @@
+service: hcm-auth
+frameworkVersion: '3'
+useDotenv: true # carga .env automaticamente (JWT_SECRET nunca va en el repo)
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  # AWS Academy: no se pueden crear roles IAM, se usa el LabRole existente
+  iam:
+    role: arn:aws:iam::${aws:accountId}:role/LabRole
+  environment:
+    JWT_SECRET: ${env:JWT_SECRET}
+    JWT_EXPIRES_IN: ${env:JWT_EXPIRES_IN, '8h'}
+    USERS_TABLE: ${self:service}-users-${sls:stage}
+    TENANTS: ${env:TENANTS, 'tenant_a,tenant_b,tenant_c'}
+    ALLOW_ROLE_ON_REGISTER: ${env:ALLOW_ROLE_ON_REGISTER, 'false'}
+    CORS_ORIGIN: ${env:CORS_ORIGIN, '*'}
+
+package:
+  patterns:
+    - '!scripts/**'
+    - '!.env*'
+    - '!README*'
+
+functions:
+  register:
+    handler: src/handlers/register.handler
+    events:
+      - http:
+          path: auth/register
+          method: post
+          cors: true
+  login:
+    handler: src/handlers/login.handler
+    events:
+      - http:
+          path: auth/login
+          method: post
+          cors: true
+  # Lambda Authorizer: no tiene evento http aqui; los otros stacks lo referencian por ARN
+  authorizer:
+    handler: src/handlers/authorizer.handler
+
+resources:
+  Resources:
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.USERS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: email
+            KeyType: HASH
+
+    # Bucket unico multi-tenant: prefijo {tenant_id}/{microservicio}/...
+    AppStorageBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: hcm-app-storage-${aws:accountId}-${sls:stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins: ['*']
+              AllowedMethods: [GET, PUT, POST, HEAD]
+              AllowedHeaders: ['*']
+              ExposedHeaders: [ETag]
+              MaxAge: 3000
+
+    # CORS tambien en las respuestas 401/403 que genera API Gateway
+    GatewayResponseDefault4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseType: DEFAULT_4XX
+        RestApiId: { Ref: ApiGatewayRestApi }
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+    GatewayResponseDefault5XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseType: DEFAULT_5XX
+        RestApiId: { Ref: ApiGatewayRestApi }
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+
+  Outputs:
+    AuthorizerArn:
+      Value: { 'Fn::GetAtt': [AuthorizerLambdaFunction, Arn] }
+      Export:
+        Name: ${self:service}-${sls:stage}-AuthorizerArn
+    BucketName:
+      Value: { Ref: AppStorageBucket }
+      Export:
+        Name: ${self:service}-${sls:stage}-BucketName
+    BucketArn:
+      Value: { 'Fn::GetAtt': [AppStorageBucket, Arn] }
+      Export:
+        Name: ${self:service}-${sls:stage}-BucketArn
+    UsersTableName:
+      Value: { Ref: UsersTable }
+      Export:
+        Name: ${self:service}-${sls:stage}-UsersTableName
+    AuthApiUrl:
+      Value:
+        'Fn::Join':
+          - ''
+          - - 'https://'
+            - { Ref: ApiGatewayRestApi }
+            - '.execute-api.${aws:region}.amazonaws.com/${sls:stage}'
+      Export:
+        Name: ${self:service}-${sls:stage}-ApiUrl

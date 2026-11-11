@@ -1,0 +1,20 @@
+{
+  "name": "hcm-auth",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "serverless deploy --stage dev",
+    "remove": "serverless remove --stage dev",
+    "seed:users": "node scripts/create-demo-users.js",
+    "test:local": "node scripts/smoke-test.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0",
+    "serverless": "^3.40.0"
+  }
+}
